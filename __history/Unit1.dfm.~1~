@@ -1,0 +1,202 @@
+object Form1: TForm1
+  Left = 0
+  Top = 0
+  Caption = 'Verificador de Atualizações - GitHub'
+  ClientHeight = 500
+  ClientWidth = 700
+  Color = clBtnFace
+  Font.Charset = DEFAULT_CHARSET
+  Font.Color = clWindowText
+  Font.Height = -12
+  Font.Name = 'Segoe UI'
+  Font.Style = []
+  Position = poScreenCenter
+  TextHeight = 15
+  object Panel1: TPanel
+    Left = 0
+    Top = 0
+    Width = 700
+    Height = 150
+    Align = alTop
+    BevelOuter = bvNone
+    Padding.Left = 10
+    Padding.Top = 10
+    Padding.Right = 10
+    Padding.Bottom = 10
+    TabOrder = 0
+    object Label1: TLabel
+      Left = 10
+      Top = 10
+      Width = 99
+      Height = 15
+      Caption = 'Propriet'#225'rio (Owner):'
+    end
+    object Label2: TLabel
+      Left = 10
+      Top = 55
+      Width = 120
+      Height = 15
+      Caption = 'Nome do Reposit'#243'rio:'
+    end
+    object Label3: TLabel
+      Left = 350
+      Top = 10
+      Width = 99
+      Height = 15
+      Caption = 'Vers'#227'o Atual:'
+    end
+    object edtOwner: TEdit
+      Left = 10
+      Top = 28
+      Width = 320
+      Height = 23
+      TabOrder = 0
+      Text = 'seu-usuario'
+    end
+    object edtRepo: TEdit
+      Left = 10
+      Top = 73
+      Width = 320
+      Height = 23
+      TabOrder = 1
+      Text = 'seu-repositorio'
+    end
+    object edtCurrentVersion: TEdit
+      Left = 350
+      Top = 28
+      Width = 150
+      Height = 23
+      TabOrder = 2
+      Text = '1.0.0'
+    end
+    object btnCheckUpdates: TButton
+      Left = 350
+      Top = 73
+      Width = 150
+      Height = 35
+      Caption = 'Verificar Atualiza'#231#245'es'
+      TabOrder = 3
+      OnClick = btnCheckUpdatesClick
+    end
+    object btnDownload: TButton
+      Left = 520
+      Top = 73
+      Width = 150
+      Height = 35
+      Caption = 'Baixar Atualiza'#231#227'o'
+      Enabled = False
+      TabOrder = 4
+      OnClick = btnDownloadClick
+    end
+  end
+  object Panel2: TPanel
+    Left = 0
+    Top = 150
+    Width = 700
+    Height = 350
+    Align = alClient
+    BevelOuter = bvNone
+    Padding.Left = 10
+    Padding.Top = 10
+    Padding.Right = 10
+    Padding.Bottom = 10
+    TabOrder = 1
+    object Label4: TLabel
+      Left = 10
+      Top = 10
+      Width = 95
+      Height = 15
+      Caption = 'Vers'#227'o Mais Recente:'
+    end
+    object Label5: TLabel
+      Left = 10
+      Top = 50
+      Width = 78
+      Height = 15
+      Caption = 'Nome da Release:'
+    end
+    object Label6: TLabel
+      Left = 350
+      Top = 10
+      Width = 100
+      Height = 15
+      Caption = 'Data de Publica'#231#227'o:'
+    end
+    object Label7: TLabel
+      Left = 10
+      Top = 90
+      Width = 95
+      Height = 15
+      Caption = 'Notas da Release:'
+    end
+    object lblLatestVersion: TLabel
+      Left = 10
+      Top = 28
+      Width = 12
+      Height = 15
+      Caption = '---'
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = clWindowText
+      Font.Height = -12
+      Font.Name = 'Segoe UI'
+      Font.Style = [fsBold]
+      ParentFont = False
+    end
+    object lblReleaseName: TLabel
+      Left = 10
+      Top = 68
+      Width = 12
+      Height = 15
+      Caption = '---'
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = clWindowText
+      Font.Height = -12
+      Font.Name = 'Segoe UI'
+      Font.Style = [fsBold]
+      ParentFont = False
+    end
+    object lblPublishedDate: TLabel
+      Left = 350
+      Top = 28
+      Width = 12
+      Height = 15
+      Caption = '---'
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = clWindowText
+      Font.Height = -12
+      Font.Name = 'Segoe UI'
+      Font.Style = [fsBold]
+      ParentFont = False
+    end
+    object memoReleaseNotes: TMemo
+      Left = 10
+      Top = 108
+      Width = 680
+      Height = 180
+      ReadOnly = True
+      ScrollBars = ssVertical
+      TabOrder = 0
+    end
+    object ProgressBar1: TProgressBar
+      Left = 10
+      Top = 300
+      Width = 680
+      Height = 20
+      TabOrder = 1
+    end
+    object lblStatus: TLabel
+      Left = 10
+      Top = 325
+      Width = 680
+      Height = 15
+      Align = alCustom
+      Caption = 'Pronto para verificar atualiza'#231#245'es'
+      Font.Charset = DEFAULT_CHARSET
+      Font.Color = clWindowText
+      Font.Height = -12
+      Font.Name = 'Segoe UI'
+      Font.Style = []
+      ParentFont = False
+    end
+  end
+end
