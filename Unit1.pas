@@ -94,8 +94,11 @@ begin
       FileInfo := 'Arquivos disponíveis:'#13#10;
       for I := 0 to Length(FLatestRelease.Assets) - 1 do
       begin
-        FileInfo := FileInfo + Format('  • %s (%s)'#13#10, 
+        FileInfo := FileInfo + Format('  • %s (%s)', 
           [FLatestRelease.Assets[I].Name, FormatFileSize(FLatestRelease.Assets[I].Size)]);
+        if FLatestRelease.Assets[I].SHA256 <> '' then
+          FileInfo := FileInfo + Format(' - SHA256: %s', [FLatestRelease.Assets[I].SHA256]);
+        FileInfo := FileInfo + #13#10;
       end;
       // Adicionar informações dos arquivos nas notas se não estiver vazio
       if memoReleaseNotes.Text <> '' then
@@ -152,7 +155,25 @@ begin
       edtCurrentVersion.Text
     );
     
-    FLatestRelease := FUpdater.GetLatestRelease;
+    try
+      FLatestRelease := FUpdater.GetLatestRelease;
+    except
+      on E: Exception do
+      begin
+        lblStatus.Caption := 'Erro ao buscar release';
+        ShowMessage(Format('❌ ERRO AO BUSCAR RELEASE'#13#10#13#10'%s'#13#10#13#10 +
+          'Possíveis causas:'#13#10 +
+          '1. Repositório não existe ou está privado'#13#10 +
+          '2. Não há releases publicadas (apenas drafts)'#13#10 +
+          '3. Problema de conexão com a internet'#13#10 +
+          '4. Limite de requisições da API do GitHub excedido'#13#10#13#10 +
+          'Verifique: https://github.com/%s/%s/releases',
+          [E.Message, edtOwner.Text, edtRepo.Text]));
+        FLatestRelease.TagName := '';
+        UpdateUI;
+        Exit;
+      end;
+    end;
     
     if FLatestRelease.TagName <> '' then
     begin
@@ -215,6 +236,9 @@ var
   DownloadPath: string;
   FileName: string;
   I: Integer;
+  CalculatedHash: string;
+  HashInfo: string;
+  ExpectedHash: string;
 begin
   // Verificar se há arquivos disponíveis
   if Length(FLatestRelease.Assets) = 0 then
@@ -269,13 +293,33 @@ begin
       try
         if Assigned(FUpdater) and FUpdater.DownloadRelease(FLatestRelease, DownloadPath) then
         begin
+          // Calcular hash SHA256 do arquivo baixado
+          CalculatedHash := FUpdater.CalculateFileSHA256(DownloadPath);
+          
+          // Verificar hash se disponível
+          ExpectedHash := '';
+          if Length(FLatestRelease.Assets) > 0 then
+            ExpectedHash := FLatestRelease.Assets[0].SHA256;
+          
+          HashInfo := '';
+          if CalculatedHash <> '' then
+          begin
+            HashInfo := Format(#13#10'SHA256: %s', [CalculatedHash]);
+            
+            // Verificar se corresponde ao hash esperado
+            if (ExpectedHash <> '') and FUpdater.VerifyFileSHA256(DownloadPath, ExpectedHash) then
+              HashInfo := HashInfo + ' ✅ (Verificado)'
+            else if ExpectedHash <> '' then
+              HashInfo := HashInfo + Format(' ⚠️ (Esperado: %s)', [ExpectedHash]);
+          end;
+          
           lblStatus.Caption := Format('Download concluído: %s', [FileName]);
           ShowMessage(Format('✅ DOWNLOAD CONCLUÍDO!'#13#10#13#10 +
             'Arquivo: %s'#13#10 +
-            'Salvo em: %s'#13#10#13#10 +
-            'Tamanho: %s',
+            'Salvo em: %s'#13#10 +
+            'Tamanho: %s%s',
             [FileName, DownloadPath, 
-             FormatFileSize(TFile.GetSize(DownloadPath))]));
+             FormatFileSize(TFile.GetSize(DownloadPath)), HashInfo]));
         end
         else
         begin

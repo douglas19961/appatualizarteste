@@ -1,16 +1,18 @@
-unit UnitGitHubUpdater;
+﻿unit UnitGitHubUpdater;
 
 interface
 
 uses
   System.Classes, System.SysUtils, System.Math, System.JSON, System.Net.HttpClient,
-  System.Net.URLClient, System.NetConsts, System.Generics.Collections, System.IOUtils;
+  System.Net.URLClient, System.NetConsts, System.Generics.Collections, System.IOUtils,
+  System.StrUtils, System.Hash;
 
 type
   TGitHubAsset = record
     Name: string;
     DownloadUrl: string;
     Size: Int64;
+    SHA256: string; // Hash SHA256 para verificação de integridade
   end;
 
   TGitHubRelease = record
@@ -33,6 +35,7 @@ type
     function GetLatestReleaseURL: string;
     function ParseRelease(const AJSON: TJSONObject): TGitHubRelease;
     function IsNumericVersion(const AVersion: string): Boolean;
+    function ExtractDownloadLinksFromBody(const ABody: string): TArray<TGitHubAsset>;
   public
     constructor Create(const AOwner, ARepo, ACurrentVersion: string);
     destructor Destroy; override;
@@ -41,6 +44,8 @@ type
     function GetLatestRelease: TGitHubRelease;
     function DownloadRelease(const ARelease: TGitHubRelease; const ADestinationPath: string): Boolean;
     function CompareVersions(const AVersion1, AVersion2: string): Integer;
+    function CalculateFileSHA256(const AFilePath: string): string;
+    function VerifyFileSHA256(const AFilePath, AExpectedHash: string): Boolean;
     
     property RepositoryOwner: string read FRepositoryOwner write FRepositoryOwner;
     property RepositoryName: string read FRepositoryName write FRepositoryName;
@@ -88,6 +93,10 @@ var
   I: Integer;
   AssetList: TList<TGitHubAsset>;
   GitHubAsset: TGitHubAsset;
+  LinksFromBody: TArray<TGitHubAsset>;
+  CombinedAssets: TList<TGitHubAsset>;
+  SizeValue: TJSONValue;
+  PrereleaseValue: TJSONValue;
 begin
   Result.TagName := '';
   Result.Name := '';
@@ -99,14 +108,37 @@ begin
   
   if Assigned(AJSON) then
   begin
-    Result.TagName := AJSON.GetValue('tag_name', '');
-    Result.Name := AJSON.GetValue('name', '');
-    Result.Body := AJSON.GetValue('body', '');
-    Result.PublishedAt := AJSON.GetValue('published_at', '');
-    Result.IsPrerelease := AJSON.GetValue('prerelease', False);
+    try
+      Result.TagName := AJSON.GetValue('tag_name', '');
+      Result.Name := AJSON.GetValue('name', '');
+      Result.Body := AJSON.GetValue('body', '');
+      Result.PublishedAt := AJSON.GetValue('published_at', '');
+      
+      // Tratar prerelease que pode vir como boolean ou string
+      if AJSON.TryGetValue('prerelease', PrereleaseValue) then
+      begin
+        try
+          if PrereleaseValue is TJSONBool then
+            Result.IsPrerelease := (PrereleaseValue as TJSONBool).AsBoolean
+          else
+            Result.IsPrerelease := LowerCase(PrereleaseValue.Value) = 'true';
+        except
+          Result.IsPrerelease := False;
+        end;
+      end
+      else
+        Result.IsPrerelease := False;
+    except
+      on E: Exception do
+      begin
+        raise Exception.Create(Format('Erro ao processar dados da release: %s'#13#10'Detalhes: %s', 
+          [E.Message, E.ClassName]));
+      end;
+    end;
     
     // Buscar todos os assets (arquivos anexados)
-    if AJSON.TryGetValue('assets', Assets) and (Assets.Count > 0) then
+
+      if AJSON.TryGetValue('assets', Assets) and (Assets.Count > 0) then
     begin
       AssetList := TList<TGitHubAsset>.Create;
       try
@@ -116,8 +148,49 @@ begin
           if Assigned(Asset) then
           begin
             GitHubAsset.Name := Asset.GetValue('name', '');
+            // browser_download_url é o campo padrão para URLs de download
+            // Pode retornar URLs como: https://github.com/user-attachments/files/...
             GitHubAsset.DownloadUrl := Asset.GetValue('browser_download_url', '');
-            GitHubAsset.Size := Asset.GetValue('size', 0);
+            
+            // Se browser_download_url estiver vazio, tenta usar 'url' como fallback
+            if GitHubAsset.DownloadUrl = '' then
+              GitHubAsset.DownloadUrl := Asset.GetValue('url', '');
+            
+            // Tratar size que pode vir como string ou número
+            // Usar sempre conversão segura via string para evitar erros
+            if Asset.TryGetValue('size', SizeValue) then
+            begin
+              try
+                // Sempre converter via string para evitar problemas de tipo
+                if not TryStrToInt64(SizeValue.Value, GitHubAsset.Size) then
+                  GitHubAsset.Size := 0;
+              except
+                GitHubAsset.Size := 0;
+              end;
+            end
+            else
+              GitHubAsset.Size := 0;
+            
+            // Capturar hash SHA256 se disponível (algumas APIs retornam)
+            GitHubAsset.SHA256 := '';
+            
+            // Adicionar todos os assets (incluindo source code)
+            // Você pode filtrar depois se quiser ignorar source code
+            AssetList.Add(GitHubAsset);
+          end;
+        end;
+        
+        // Reordenar: arquivos de aplicação primeiro, depois source code
+        // Isso garante que Project1.zip apareça antes dos arquivos de source code
+        // Fazemos uma ordenação manual simples
+        for I := AssetList.Count - 1 downto 0 do
+        begin
+          if (AssetList[I].Name.StartsWith('Source code', True)) or 
+             (AssetList[I].Name.EndsWith('.tar.gz', True)) then
+          begin
+            // Move source code para o final
+            GitHubAsset := AssetList[I];
+            AssetList.Delete(I);
             AssetList.Add(GitHubAsset);
           end;
         end;
@@ -134,6 +207,41 @@ begin
         AssetList.Free;
       end;
     end;
+    
+    // Se não encontrou assets anexados, tenta extrair links da descrição
+    // Isso ajuda quando o usuário não consegue anexar o arquivo como asset
+    if (Length(Result.Assets) = 0) or 
+       ((Length(Result.Assets) = 2) and 
+        Result.Assets[0].Name.StartsWith('Source code', True) and
+        Result.Assets[1].Name.StartsWith('Source code', True)) then
+    begin
+      LinksFromBody := ExtractDownloadLinksFromBody(Result.Body);
+      if Length(LinksFromBody) > 0 then
+      begin
+        // Adiciona os links encontrados na descrição ao início da lista
+        CombinedAssets := TList<TGitHubAsset>.Create;
+        try
+          // Primeiro adiciona os links da descrição
+          for I := 0 to Length(LinksFromBody) - 1 do
+            CombinedAssets.Add(LinksFromBody[I]);
+          
+          // Depois adiciona os assets existentes (source code)
+          for I := 0 to Length(Result.Assets) - 1 do
+            CombinedAssets.Add(Result.Assets[I]);
+          
+          // Atualiza o array de assets
+          SetLength(Result.Assets, CombinedAssets.Count);
+          for I := 0 to CombinedAssets.Count - 1 do
+            Result.Assets[I] := CombinedAssets[I];
+          
+          // Atualiza DownloadUrl com o primeiro link encontrado
+          if Length(LinksFromBody) > 0 then
+            Result.DownloadUrl := LinksFromBody[0].DownloadUrl;
+        finally
+          CombinedAssets.Free;
+        end;
+      end;
+    end;
   end;
 end;
 
@@ -143,6 +251,7 @@ var
   JSONValue: TJSONValue;
   JSONObject: TJSONObject;
   ErrorMsg: string;
+  ResponseText: string;
 begin
   Result.TagName := '';
   Result.Name := '';
@@ -164,6 +273,13 @@ begin
           begin
             JSONObject := JSONValue as TJSONObject;
             Result := ParseRelease(JSONObject);
+          end
+          else
+          begin
+            // JSON inválido ou vazio
+            ErrorMsg := Format('Resposta da API inválida. Status: %d'#13#10'URL: %s'#13#10'Resposta: %s',
+              [Response.StatusCode, GetLatestReleaseURL, Copy(Response.ContentAsString, 1, 200)]);
+            raise Exception.Create(ErrorMsg);
           end;
         finally
           JSONValue.Free;
@@ -171,14 +287,21 @@ begin
       end;
       404:
       begin
-        // Repositório não encontrado ou não possui releases - retorna vazio sem erroo
-        // O erro será tratado na interface
-        Result.TagName := '';
-        Result.Name := '';
-        Result.Body := '';
-        Result.PublishedAt := '';
-        Result.DownloadUrl := '';
-        Result.IsPrerelease := False;
+        // Repositório não encontrado ou não possui releases
+        // Verifica se é repositório não encontrado ou apenas sem releases
+        ResponseText := Response.ContentAsString;
+        
+        if (Pos('Not Found', ResponseText) > 0) or (Pos('not found', LowerCase(ResponseText)) > 0) then
+        begin
+          ErrorMsg := Format('Repositório não encontrado: %s/%s'#13#10'Verifique se o repositório existe e está acessível.'#13#10'URL: %s',
+            [FRepositoryOwner, FRepositoryName, GetLatestReleaseURL]);
+        end
+        else
+        begin
+          ErrorMsg := Format('Nenhuma release encontrada para o repositório %s/%s'#13#10'Certifique-se de que há pelo menos uma release publicada (não draft).'#13#10'URL: %s',
+            [FRepositoryOwner, FRepositoryName, GetLatestReleaseURL]);
+        end;
+        raise Exception.Create(ErrorMsg);
       end;
       403:
       begin
@@ -270,6 +393,130 @@ begin
   end;
 end;
 
+function TGitHubUpdater.ExtractDownloadLinksFromBody(const ABody: string): TArray<TGitHubAsset>;
+var
+  Links: TList<TGitHubAsset>;
+  GitHubAsset: TGitHubAsset;
+  StartPos, EndPos: Integer;
+  LinkText, URL, FileName: string;
+  Ext: string;
+  AlreadyAdded: Boolean;
+  I, J: Integer;
+begin
+  SetLength(Result, 0);
+  Links := TList<TGitHubAsset>.Create;
+  try
+    // Procura por links markdown [texto](url) ou links diretos
+    StartPos := 1;
+    while StartPos <= Length(ABody) do
+    begin
+      // Procura por padrão markdown [texto](url)
+      StartPos := Pos('[', ABody, StartPos);
+      if StartPos = 0 then
+        Break;
+      
+      EndPos := Pos(']', ABody, StartPos);
+      if EndPos = 0 then
+        Break;
+      
+      LinkText := Copy(ABody, StartPos + 1, EndPos - StartPos - 1);
+      
+      // Procura a URL após o ]
+      if (EndPos < Length(ABody)) and (ABody[EndPos + 1] = '(') then
+      begin
+        StartPos := EndPos + 2;
+        EndPos := Pos(')', ABody, StartPos);
+        if EndPos > 0 then
+        begin
+          URL := Copy(ABody, StartPos, EndPos - StartPos);
+          
+          // Verifica se é um link do GitHub para arquivos ZIP/EXE
+          if (URL.Contains('github.com')) and 
+             ((URL.Contains('.zip')) or (URL.Contains('.exe')) or 
+              (URL.Contains('user-attachments'))) then
+          begin
+            FileName := LinkText;
+            if FileName = '' then
+              FileName := ExtractFileName(URL);
+            
+            Ext := LowerCase(ExtractFileExt(FileName));
+            // Só adiciona se for ZIP, EXE ou outros formatos de aplicação
+            if (Ext = '.zip') or (Ext = '.exe') or (Ext = '.msi') or 
+               (Ext = '.rar') or (Ext = '.7z') then
+            begin
+            GitHubAsset.Name := FileName;
+            GitHubAsset.DownloadUrl := URL;
+            GitHubAsset.Size := 0; // Tamanho desconhecido para links
+            GitHubAsset.SHA256 := ''; // Hash não disponível para links
+            Links.Add(GitHubAsset);
+            end;
+          end;
+        end;
+      end;
+      
+      StartPos := EndPos + 1;
+    end;
+    
+    // Também procura por URLs diretas (sem markdown)
+    StartPos := 1;
+    while StartPos <= Length(ABody) do
+    begin
+      StartPos := Pos('https://github.com', ABody, StartPos);
+      if StartPos = 0 then
+        Break;
+      
+      EndPos := StartPos;
+      // Encontra o fim da URL (espaço, quebra de linha, ou fim do texto)
+      while (EndPos <= Length(ABody)) and 
+            not CharInSet(ABody[EndPos], [' ', #13, #10, ')', ']', '<']) do
+        Inc(EndPos);
+      
+      URL := Copy(ABody, StartPos, EndPos - StartPos);
+      
+      // Verifica se é link para arquivo ZIP/EXE
+      if (URL.Contains('.zip')) or (URL.Contains('.exe')) or 
+         (URL.Contains('user-attachments')) then
+      begin
+        FileName := ExtractFileName(URL);
+        Ext := LowerCase(ExtractFileExt(FileName));
+        
+        if (Ext = '.zip') or (Ext = '.exe') or (Ext = '.msi') or 
+           (Ext = '.rar') or (Ext = '.7z') then
+        begin
+          // Verifica se já não foi adicionado
+          AlreadyAdded := False;
+          for J := 0 to Links.Count - 1 do
+          begin
+            if Links[J].DownloadUrl = URL then
+            begin
+              AlreadyAdded := True;
+              Break;
+            end;
+          end;
+          
+          if not AlreadyAdded then
+          begin
+            GitHubAsset.Name := FileName;
+            GitHubAsset.DownloadUrl := URL;
+            GitHubAsset.Size := 0;
+            GitHubAsset.SHA256 := ''; // Hash não disponível para links
+            Links.Add(GitHubAsset);
+          end;
+        end;
+      end;
+      
+      StartPos := EndPos + 1;
+    end;
+    
+    // Converter para array
+    SetLength(Result, Links.Count);
+    for I := 0 to Links.Count - 1 do
+      Result[I] := Links[I];
+  finally
+    Links.Free;
+  end;
+end;
+
 function TGitHubUpdater.CompareVersions(const AVersion1, AVersion2: string): Integer;
 var
   Parts1, Parts2: TArray<string>;
@@ -352,6 +599,80 @@ begin
       raise Exception.Create(Format('Erro ao baixar: %s'#13#10'URL: %s', [E.Message, DownloadURL]));
     end;
   end;
+end;
+
+function TGitHubUpdater.CalculateFileSHA256(const AFilePath: string): string;
+var
+  FileStream: TFileStream;
+  HashSHA2: THashSHA2;
+  Buffer: TBytes;
+  BytesRead: Integer;
+  BufferSize: Integer;
+begin
+  Result := '';
+  if not TFile.Exists(AFilePath) then
+    Exit;
+  
+  try
+    FileStream := TFileStream.Create(AFilePath, fmOpenRead or fmShareDenyWrite);
+    try
+      HashSHA2 := THashSHA2.Create(SHA256);
+      BufferSize := 65536; // 64 KB por vez
+      SetLength(Buffer, BufferSize);
+      
+      // Ler o arquivo em blocos e atualizar o hash
+      while True do
+      begin
+        BytesRead := FileStream.Read(Buffer[0], BufferSize);
+        if BytesRead = 0 then
+          Break;
+        
+        // Atualizar hash apenas com os bytes lidos
+        if BytesRead < BufferSize then
+        begin
+          SetLength(Buffer, BytesRead);
+          HashSHA2.Update(Buffer);
+          Break; // Fim do arquivo
+        end
+        else
+        begin
+          HashSHA2.Update(Buffer);
+        end;
+      end;
+      
+      Result := LowerCase(HashSHA2.HashAsString);
+    finally
+      FileStream.Free;
+    end;
+  except
+    Result := '';
+  end;
+end;
+
+function TGitHubUpdater.VerifyFileSHA256(const AFilePath, AExpectedHash: string): Boolean;
+var
+  CalculatedHash: string;
+  CleanExpectedHash: string;
+begin
+  Result := False;
+  
+  if AExpectedHash = '' then
+  begin
+    // Se não há hash esperado, considera válido
+    Result := True;
+    Exit;
+  end;
+  
+  CalculatedHash := CalculateFileSHA256(AFilePath);
+  
+  if CalculatedHash = '' then
+    Exit;
+  
+  // Remove "sha256:" prefix se presente e converte para minúsculas
+  CleanExpectedHash := StringReplace(LowerCase(Trim(AExpectedHash)), 'sha256:', '', [rfReplaceAll]);
+  CalculatedHash := LowerCase(Trim(CalculatedHash));
+  
+  Result := (CalculatedHash = CleanExpectedHash);
 end;
 
 end.
